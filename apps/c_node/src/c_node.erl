@@ -20,3 +20,21 @@
 % spawn process that provides the received ip address (for further messaging, so we dont need to save any state)
 % 
 % -------------------------------------------------------------------------------------------------
+
+%init node with provided m_nodename
+-spec init(M_Nodename :: string()).
+
+%spawn ip provider process with obtained ip address
+-spec spawn_ip_provider(Ip :: string()).
+
+%ip provider process, provides ip address to other processes
+-spec ip_provider().
+
+%make get_file_list request to master node
+-spec get_file_list().
+
+%make get_file request to master node
+-spec get_file(Filename :: string()).
+
+%make upload_file request to master node
+-spec upload_file(Filename :: string()).
