@@ -1,5 +1,5 @@
 -module(m_node).
--export([]).
+-export([init/0, tcp_server/1]).
 
 % spec : 
 % 
@@ -19,10 +19,10 @@
 %   - s_deleted_file (node name + file name + size) (s_node tells m_node to update both tables as needed (add to 1, deduct space from 2))
 % 
 % from c_node : 
-%   - c_get_file_list (ip) (c_node requests list of all files)
-%   - c_get_file (ip, file name) (send c_node ip addrs of all s_nodes that have the file)
-%   - c_upload_file (ip, file_name, file_size) (send c_node ip addrs of all s_nodes that can store the file)
-%   - c_delete_file (ip, file_name) (delete file from all s_nodes that have it)
+%   - c_get_file_list (socket) (c_node requests list of all files)
+%   - c_get_file (socket, file name) (send c_node ip addrs of all s_nodes that have the file)
+%   - c_upload_file (socket, file_name, file_size) (send c_node ip addrs of all s_nodes that can store the file)
+%   - c_delete_file (socket, file_name) (delete file from all s_nodes that have it)
 % 
 % -------------------------------------------------------------------------------------------------
 % 
@@ -71,7 +71,7 @@ spawn_tcp_servers(N, Listener) ->
     spawn_tcp_servers(N - 1, Listener).
 
 %connection accepting loop for each tcp server
--spec tcp_server(Listener :: any()).
+-spec tcp_server(Listener :: any()) -> any().
 tcp_server(Listener) ->
     {ok, Socket} = socket:accept(Listener),
     {ok, Data} = socket:recv(Socket),
@@ -82,17 +82,19 @@ tcp_server(Listener) ->
             s_received_file(FromName, FileName, FileSize);
         {s_deleted_file, {FromName, FileName, FileSize}} ->
             s_deleted_file(FromName, FileName, FileSize);
-        {c_get_file_list, {FromIp}} ->
-            c_get_file_list(FromIp);
-        {c_get_file, {FromIp, FileName}} ->
-            c_get_file(FromIp, FileName);
-        {c_upload_file, {FromIp, FileName, FileSize}} ->
-            c_upload_file(FromIp, FileName, FileSize);
-        {c_delete_file, {FromIp, FileName}} ->
-            c_delete_file(FromIp, FileName);
+        {c_get_file_list, {}} ->
+            c_get_file_list(Socket);
+        {c_get_file, {FileName}} ->
+            c_get_file(Socket, FileName);
+        {c_upload_file, {}} ->
+            c_upload_file(Socket);
+        {c_delete_file, {FileName}} ->
+            c_delete_file(FileName);
         _ ->
             ok = io:format("Received invalid Data~n")
-    end.
+    end,
+    ok = socket:close(Socket),
+    tcp_server(Listener).
 
 %register new s_node, update both tables 
 % node may already contain some files, so table1 has to be checked first
@@ -108,56 +110,87 @@ s_register_node(FromName, FromIp, Files, SpaceUsed) ->
                     {_, NodesAlreadyHoldingFile}= lists:nth(1, ets:lookup(table1, FileName)),
                     true = ets:insert(table1, {FileName, [{FromIp, FromName} | NodesAlreadyHoldingFile]});
                 false ->
-                    true = ets:insert(table1, {FileName, {FromIp, FromName}})
+                    true = ets:insert(table1, {FileName, [{FromIp, FromName}]})
             end
         end
     , Files),
     %updating table2
     true = ets:insert(table2, {FromName, {FromIp, SpaceUsed}}).
 
-%todo
+%s_node has received a new file, update both tables
 -spec s_received_file(FromName :: atom(), FileName :: string(), FileSize :: integer()) -> no_return().
 s_received_file(FromName, FileName, FileSize) ->
-    ok.
+    %get ip of s_node from table2
+    {_, {FromIp, SpaceUsed}} = lists:nth(1, ets:lookup(table2, FromName)),
+    %update table1
+    case ets:member(table1, FileName) of
+        true ->
+            {_, NodesAlreadyHoldingFile}= lists:nth(1, ets:lookup(table1, FileName)),
+            true = ets:insert(table1, {FileName, [{FromIp, FromName} | NodesAlreadyHoldingFile]});
+        false ->
+            true = ets:insert(table1, {FileName, [{FromIp, FromName}]})
+    end,
+    %update table2
+    true = ets:insert(table2, {FromName, {FromIp, SpaceUsed + FileSize}}).
 
-%todo
--spec s_deleted_file(FromName :: atom(), FileName :: string(), FileSize :: int()) -> no_return().
+
+%s_node has deleted a file, update both tables
+% remove s_node from this file's entry in table1
+% update s_node's SpaceUsed in table2
+-spec s_deleted_file(FromName :: atom(), FileName :: string(), FileSize :: integer()) -> no_return().
 s_deleted_file(FromName, FileName, FileSize) ->
-    ok.
+    %get ip of s_node from table2
+    {_, {FromIp, SpaceUsed}} = lists:nth(1, ets:lookup(table2, FromName)),
+    %update table1
+    {_, NodesHoldingFile}= lists:nth(1, ets:lookup(table1, FileName)),
+    NodesHoldingFileUpdated = lists:delete({FromIp, FromName}, NodesHoldingFile),
+    true = ets:insert(table1, {FileName, NodesHoldingFileUpdated}),
+    %update table2
+    true = ets:insert(table2, {FromName, {FromIp, SpaceUsed - FileSize}}).
+
+%get list of files from table1 and send it to the c_node
+-spec c_get_file_list(Socket :: socket:socket()) -> no_return().
+c_get_file_list(Socket) ->
+    ListOfFiles = [L || {L, _} <- ets:tab2list(table1)],
+    ok = socket:send(Socket, term_to_binary({c_get_file_list_response, ListOfFiles})).
+
+%get list of all nodes holding the file from table1 and send it to the c_node
+-spec c_get_file(Socket :: socket:socket(), FileName :: string()) -> no_return().
+c_get_file(Socket, FileName) ->
+    {_, NodesHoldingFile} = lists:nth(1, ets:lookup(table1, FileName)),
+    ok = socket:send(Socket, term_to_binary({c_get_file_response, NodesHoldingFile})).
 
 %todo
--spec c_get_file_list(FromIp :: string()) -> no_return().
-c_get_file_list(FromIp) ->
-    ok.
+-spec c_upload_file(Socket :: socket:socket()) -> no_return().
+c_upload_file(Socket) ->
+    ListOfNodes = [L || {_, L} <- ets:tab2list(table2)],
+    ListOfNodesSorted = qsort_nodes(ListOfNodes),
+    {ListOfNodesToSend, _} = lists:split(max(2, length(ListOfNodesSorted)), ListOfNodesSorted),
+    ok = socket:send(Socket, term_to_binary(ListOfNodesToSend)).
+
+%for use by c_upload_file
+% quick sort list of pairs {ip, space_used} by space_used
+-spec qsort_nodes(L :: list()) -> list().
+qsort_nodes([]) ->
+    [];
+qsort_nodes([Pivot | Tail]) ->
+    qsort_nodes([X || X <- Tail, element(2, X) < element(2, Pivot)]) ++ [Pivot] ++ qsort_nodes([X || X <- Tail, element(2, X) >= element(2, Pivot)]).
 
 %todo
--spec c_get_file(FromIp :: string(), FileName :: string()) -> no_return().
-c_get_file(FromIp, FileName) ->
-    ok.
-
-%todo
--spec c_upload_file(FromIp :: string(), FileName :: string(), FileSize :: integer()) -> no_return().
-c_upload_file(FromIp, FileName, FileSize) ->
-    ok.
-
-%todo
--spec c_delete_file(FromIp :: string(), FileName :: string()) -> no_return().
-c_delete_file(FromIp, FileName) ->
-    ok.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+-spec c_delete_file(FileName :: string()) -> no_return().
+c_delete_file(FileName) ->
+    {_, NodesHoldingFile} = lists:nth(1, ets:lookup(table1, FileName)),
+    lists:foreach(
+        fun({Ip, _}) ->
+            {ok, Socket} = socket:open(inet, stream, tcp),
+            {ok, IpAddr} = inet:parse_address(Ip),
+            ok = socket:connect(Socket, #{
+                family => inet,
+                addr => IpAddr,
+                port => 27000
+            }),
+            ok = socket:send(Socket, term_to_binary({m_delete_file, {FileName}})),
+            ok = socket:shutdown(Socket, read_write),
+            ok = socket:close(Socket)
+        end
+    , NodesHoldingFile).
