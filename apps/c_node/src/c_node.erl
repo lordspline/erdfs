@@ -135,6 +135,7 @@ request_and_accept_file(Ip, Filename) ->
     ok = socket:shutdown(Socket, write),
     {ok, Fd} = file:open("~/.erdfs/storage/" ++ Filename, [raw, write, binary]),
     accept_file(Socket, Fd),
+    ok = socket:close(Socket),
     %check if transfer was successful and file has been created
     case file:open("~/.erdfs/storage/" ++ Filename, [read]) of
         {error, _} ->

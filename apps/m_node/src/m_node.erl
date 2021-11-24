@@ -81,8 +81,8 @@ tcp_server(Listener) ->
             s_register_node(FromIp, Files, SpaceUsed);
         {s_received_file, {FromIp, FileName, FileSize}} ->
             s_received_file(FromIp, FileName, FileSize);
-        {s_deleted_file, {FromName, FileName, FileSize}} ->
-            s_deleted_file(FromName, FileName, FileSize);
+        {s_deleted_file, {FromIp, FileName, FileSize}} ->
+            s_deleted_file(FromIp, FileName, FileSize);
         {c_get_file_list, {}} ->
             c_get_file_list(Socket);
         {c_get_file, {FileName}} ->
@@ -161,7 +161,8 @@ c_get_file(Socket, FileName) ->
     {_, NodesHoldingFile} = lists:nth(1, ets:lookup(table1, FileName)),
     ok = socket:send(Socket, term_to_binary({c_get_file_response, NodesHoldingFile})).
 
-%todo
+%get list of nodes sorted by least space used,
+% return Ips of at most 2 to requesting c_node
 -spec c_upload_file(Socket :: socket:socket()) -> no_return().
 c_upload_file(Socket) ->
     ListOfNodesSorted = qsort_nodes(ets:tab2list(table2)),
@@ -177,7 +178,7 @@ qsort_nodes([]) ->
 qsort_nodes([Pivot | Tail]) ->
     qsort_nodes([X || X <- Tail, element(2, X) < element(2, Pivot)]) ++ [Pivot] ++ qsort_nodes([X || X <- Tail, element(2, X) >= element(2, Pivot)]).
 
-%todo
+%send delete file request to each s_node that has the file
 -spec c_delete_file(Socket :: socket:socket(), FileName :: string()) -> no_return().
 c_delete_file(Socket, FileName) ->
     {_, NodesHoldingFile} = lists:nth(1, ets:lookup(table1, FileName)),
